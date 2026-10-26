@@ -11,6 +11,16 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class ThemeFilesTest {
+    @Test public void privateAlpineAssetsUseAnExactAllowlist() {
+        assertEquals("alpine/font-clock.otf", ThemeFiles.path(Arrays.asList("alpine", "font-clock.otf")));
+        assertEquals("alpine/private.json", ThemeFiles.path(Arrays.asList("alpine", "private.json")));
+        assertEquals("alpine/font-clock.ttf", ThemeFiles.path(Arrays.asList("alpine", "font-clock.ttf")));
+        assertNull(ThemeFiles.path(Arrays.asList("alpine", "unknown.ttf")));
+        assertNull(ThemeFiles.path(Arrays.asList("alpine", "../config.json")));
+        assertNull(ThemeFiles.path(Arrays.asList("alpine", "arbitrary.otf")));
+        assertNull(ThemeFiles.path(Arrays.asList("alpine", "run.sh")));
+        assertNull(ThemeFiles.path(Arrays.asList("alpine", "nested", "font-clock.otf")));
+    }
     @Test public void themeFilesAreAllowed() {
         assertEquals("config.json", ThemeFiles.path(Collections.singletonList("config.json")));
         assertEquals("wallpaper.jpg", ThemeFiles.path(Collections.singletonList("wallpaper.jpg")));

@@ -36,7 +36,7 @@ afterwards.
 ## A local build for Android 7
 
 `minSdk 24` alone installs and then crashes on start with `NoClassDefFoundError: java.time.LocalDate`:
-the launcher reads `java.time` in `MainActivity.java`, `Sun.java`, `Festival.java`, `SkyView.java` and
+the launcher reads `java.time` in `ClassicHomeActivity.java`, `Sun.java`, `Festival.java`, `SkyView.java` and
 `ClockScene.java`. Two changes made the fork run on this set:
 
 - core library desugaring - `coreLibraryDesugaringEnabled true` in `compileOptions` and a
@@ -45,7 +45,7 @@ the launcher reads `java.time` in `MainActivity.java`, `Sun.java`, `Festival.jav
 
 | in | call | replaced with |
 |---|---|---|
-| `MainActivity.java` | `PackageManager.getChangedPackages` | compare the installed package count |
+| `ClassicHomeActivity.java` | `PackageManager.getChangedPackages` | compare the installed package count |
 | `UiFont.java` | `Resources.getFont` | `ResourcesCompat.getFont` |
 | `WallpaperCaptions.java` | `Files.readAllLines(file.toPath())` | a plain `BufferedReader` |
 | `WallpaperPlayer.java` | `Bitmap.Config.HARDWARE` | the same bitmap without it, `HARDWARE` being Android 8 and up |

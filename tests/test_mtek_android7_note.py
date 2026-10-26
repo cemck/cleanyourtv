@@ -38,7 +38,7 @@ PROMPT = ROOT / "PROMPT.md"
 # name the note gives it, and the replacement its table gives. The call is searched for in that file:
 # when it is no longer there, the note has a stale row and the test fails rather than passing quietly.
 API_CALLS = {
-    "MainActivity.java": ("getChangedPackages", "getChangedPackages", "installed package count"),
+    "ClassicHomeActivity.java": ("getChangedPackages", "getChangedPackages", "installed package count"),
     "UiFont.java": ("getFont(", "Resources.getFont", "ResourcesCompat.getFont"),
     "WallpaperCaptions.java": ("toPath()", "toPath()", "BufferedReader"),
     "WallpaperPlayer.java": ("Config.HARDWARE", "Config.HARDWARE", "Android 8"),
@@ -179,7 +179,7 @@ class TheNotesClaimsAboutThisBoard(unittest.TestCase):
         self.assertNotRegex(self.page, r"am start[^\n]*(factory|hkcfac|factorymenu)")
 
     def test_the_inputs_extra_is_the_one_the_launcher_sends(self):
-        source = java_files()["MainActivity.java"]
+        source = java_files()["ClassicHomeActivity.java"]
         self.assertIn('putExtra("input"', source,
                       "MainActivity.openInput no longer sends the source number as the extra 'input', "
                       "so the note's comparison with CVTE's extra is stale")

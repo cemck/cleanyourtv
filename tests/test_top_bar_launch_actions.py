@@ -8,7 +8,7 @@ JAVA = ROOT / 'launcher/app/src/main/java/com/gathin/tvhome'
 
 class TopBarLaunchActionsTest(unittest.TestCase):
     def setUp(self):
-        self.source = (JAVA / 'MainActivity.java').read_text()
+        self.source = (JAVA / 'ClassicHomeActivity.java').read_text()
         self.method = self.source.split('private void addTopBarApps(', 1)[1].split(
             '@Override public void onLibraryUp()', 1)[0]
 

@@ -21,3 +21,8 @@ bench-results/
 *.aab
 launcher/hs_err_pid*.log
 launcher/replay_pid*.log
+
+# Private externally loaded fonts and local weather settings
+*.otf
+*.ttc
+themes/alpine-glass/private/

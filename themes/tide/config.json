@@ -23,5 +23,7 @@
   "icon_only_buttons": true,
   "icon_only_inputs": true,
   "show_greeting": false,
-  "header_white": true
+  "header_white": true,
+  "key_filter": false,
+  "stock_home_redirect": "com.google.android.apps.tv.launcherx"
 }

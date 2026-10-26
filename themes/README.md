@@ -29,6 +29,7 @@ refused (copy a theme first), and a `config.json` it cannot read is named before
 | `six-columns/` | Six smaller tiles per row and one grid row visible under the dock | <img src="six-columns/screenshot.jpg" width="320" alt="six-columns theme"> |
 | `retro/` | Pure black, a dock with no band or border, a rim-only focus highlight (`glass_style: rim`), no colour gradient, icon-only top buttons, and a wallpaper for morning, afternoon and night. The three pictures are the author's own; see `retro/CREDITS.md`. By [REGT-URRED](https://github.com/REGT-URRED) | <img src="retro/screenshot.jpg" width="320" alt="retro theme"> |
 | `sweden/` | Three photos of Sweden from Wikimedia Commons (the aurora over Abisko, Vasabron at dusk, Skeppsbron in the evening), a new one every hour with its place and photographer under the buttons; six small tiles in a frosted-glass dock, round icon-only buttons, no hero name. The photos are CC BY / CC BY-SA, not MIT: see `sweden/CREDITS.md` | <img src="sweden/screenshot.jpg" width="320" alt="sweden theme"> |
+| `tide/` | Original aerial coastline with sea-green water, a pale sand crescent, a translucent dock, compact controls and a light white focus halo; focus glides into place without overshoot. Static wallpaper, five columns, existing dock apps preserved. | <img src="tide/screenshot.jpg" width="320" alt="Tide coastline theme"> |
 
 Every theme folder has a `screenshot.jpg` of Home with that theme on a real TV. `tools/theme.sh` never
 pushes it; it is only here so you can see a theme before you try it.

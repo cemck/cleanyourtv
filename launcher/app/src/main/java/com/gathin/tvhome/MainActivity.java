@@ -92,6 +92,7 @@ public class MainActivity extends Activity {
         }
       };
   private Dialog library;
+  private AlertDialog dockMenu;
   private PopupWindow inputMenu;
   private final Runnable minute =
       new Runnable() {
@@ -396,55 +397,131 @@ public class MainActivity extends Activity {
       for (AlpineData.App a : apps) if (a.pkg.equals(pkg) && selected.size() < 10) selected.add(a);
     for (AlpineData.App a : apps)
       if (selected.size() < 10 && !selected.contains(a)) selected.add(a);
-    for (AlpineData.App a : selected) {
-      FrameLayout tile = button(a.label, 0, a, () -> launch(a.launch, a.pkg));
-      dock.addView(tile);
+    List<String> defaults = new ArrayList<>();
+    for (AlpineData.App app : selected) defaults.add(app.pkg);
+    while (defaults.size() < 10) defaults.add("empty" + defaults.size());
+    defaults.add("settings");
+    defaults.add("apps");
+    Set<String> installed = new HashSet<>();
+    for (AlpineData.App app : apps) installed.add(app.pkg);
+    for (String key : AlpineDock.restore(
+        getPreferences(MODE_PRIVATE).getString("alpine_dock_order", null), defaults, installed)) {
+      FrameLayout tile = dockTile(key);
       dockTiles.add(tile);
-      dockKeys.put(tile, a.pkg);
-    }
-    while (dockTiles.size() < 10) {
-      FrameLayout tile = button("Apps", 3, null, this::showLibrary);
       dock.addView(tile);
-      dockTiles.add(tile);
-      dockKeys.put(tile, "empty" + dockTiles.size());
     }
-    FrameLayout gear = button("Settings", 2, null, this::openSettings);
-    dock.addView(gear);
-    dockTiles.add(gear);
-    dockKeys.put(gear, "settings");
-    FrameLayout more = button("All apps", 3, null, this::showLibrary);
-    dock.addView(more);
-    dockTiles.add(more);
-    dockKeys.put(more, "apps");
-    List<View> ordered = new ArrayList<>();
-    for (String key : getPreferences(MODE_PRIVATE).getString("alpine_dock_order", "").split(","))
-      for (View tile : dockTiles)
-        if (key.equals(dockKeys.get(tile)) && !ordered.contains(tile)) ordered.add(tile);
-    for (View tile : dockTiles) if (!ordered.contains(tile)) ordered.add(tile);
-    dockTiles.clear();
-    dockTiles.addAll(ordered);
-    dock.removeAllViews();
-    for (View tile : dockTiles) dock.addView(tile);
+  }
+
+  private AlpineData.App appFor(String key) {
+    for (AlpineData.App app : apps) if (app.pkg.equals(key)) return app;
+    return null;
+  }
+
+  private int dockIndex(String key) {
+    for (int i = 0; i < dockTiles.size(); i++)
+      if (key.equals(dockKeys.get(dockTiles.get(i)))) return i;
+    return -1;
+  }
+
+  private FrameLayout dockTile(String key) {
+    AlpineData.App app = appFor(key);
+    FrameLayout tile;
+    if (app != null) tile = button(app.label, 0, app, () -> launch(app.launch, app.pkg));
+    else if (key.equals("settings")) tile = button("Settings", 2, null, this::openSettings);
+    else if (key.equals("apps")) tile = button("All apps", 3, null, this::showLibrary);
+    else {
+      tile = button("Add app", 5, null, this::showLibrary);
+      tile.setOnClickListener(v -> showLibrary(dockTiles.indexOf(v)));
+    }
+    dockKeys.put(tile, key);
+    tile.setOnLongClickListener(v -> {
+      v.cancelPendingInputEvents();
+      v.setPressed(false);
+      if (app != null) {
+        choices(app.label, new String[] {"Move", "Remove from dock"}, which -> {
+          if (which == 0) editDock(v);
+          else changeDock(dockTiles.indexOf(v), null);
+        });
+      } else if (key.startsWith("empty")) showLibrary(dockTiles.indexOf(v));
+      else { editDock(v); heldDockEdit = true; }
+      return true;
+    });
+    View.OnFocusChangeListener animation = tile.getOnFocusChangeListener();
+    tile.setOnFocusChangeListener((v, focused) -> {
+      animation.onFocusChange(v, focused);
+      if (!focused) return;
+      int at = dockTiles.indexOf(v);
+      if (at < 0) return;
+      lastDock = at;
+      if (pendingPrograms != null) {
+        List<AlpineData.Program> ready = pendingPrograms;
+        pendingPrograms = null;
+        showPrograms(ready, "Watch next");
+      }
+      linkNativeFocus();
+      getPreferences(MODE_PRIVATE).edit().putInt("dock_index", at).apply();
+    });
+    return tile;
+  }
+
+  private void saveDock() {
+    List<String> keys = new ArrayList<>();
+    for (View tile : dockTiles) keys.add(dockKeys.get(tile));
+    getPreferences(MODE_PRIVATE).edit().putString("alpine_dock_order", String.join(",", keys)).apply();
+  }
+
+  private void choices(String title, String[] options, java.util.function.IntConsumer action) {
+    if (dockMenu != null) dockMenu.dismiss();
+    AlertDialog menu = new AlertDialog.Builder(this).setTitle(title)
+        .setItems(options, (dialog, which) -> { dialog.dismiss(); action.accept(which); })
+        .setNegativeButton(android.R.string.cancel, null).create();
+    dockMenu = menu;
+    menu.setOnDismissListener(d -> { if (dockMenu == menu) dockMenu = null; });
+    menu.show();
+    if (menu.getWindow() != null) art.frost(menu.getWindow().getDecorView(), dp(22), .72f);
+  }
+
+  private void appDockOptions(AlpineData.App app) {
+    int pinned = dockIndex(app.pkg);
+    choices(app.label, new String[] {pinned < 0 ? "Add to dock" : "Remove from dock"},
+        which -> {
+          if (pinned >= 0) changeDock(pinned, null);
+          else addToDock(app);
+        });
+  }
+
+  private void addToDock(AlpineData.App app) {
     for (int i = 0; i < dockTiles.size(); i++) {
-      View tile = dockTiles.get(i);
-      tile.setOnLongClickListener(v -> { editDock(v); heldDockEdit = true; return true; });
-      View.OnFocusChangeListener animation = tile.getOnFocusChangeListener();
-      tile.setOnFocusChangeListener(
-          (v, f) -> {
-            animation.onFocusChange(v, f);
-            if (f) {
-              int at = dockTiles.indexOf(v);
-              lastDock = at;
-              if (pendingPrograms != null) {
-                List<AlpineData.Program> ready = pendingPrograms;
-                pendingPrograms = null;
-                showPrograms(ready, "Watch next");
-              }
-              linkNativeFocus();
-              getPreferences(MODE_PRIVATE).edit().putInt("dock_index", at).apply();
-            }
-          });
+      if (dockKeys.get(dockTiles.get(i)).startsWith("empty")) { changeDock(i, app); return; }
     }
+    List<Integer> slots = new ArrayList<>();
+    List<String> labels = new ArrayList<>();
+    for (int i = 0; i < dockTiles.size(); i++) {
+      AlpineData.App current = appFor(dockKeys.get(dockTiles.get(i)));
+      if (current != null) { slots.add(i); labels.add(current.label); }
+    }
+    choices("Replace a dock app with " + app.label, labels.toArray(new String[0]),
+        which -> changeDock(slots.get(which), app));
+  }
+
+  private void changeDock(int slot, AlpineData.App app) {
+    if (slot < 0 || slot >= dockTiles.size()) return;
+    if (app != null && dockIndex(app.pkg) >= 0) {
+      Toast.makeText(this, "Already in dock", Toast.LENGTH_SHORT).show();
+      return;
+    }
+    if (library != null) library.dismiss();
+    View old = dockTiles.get(slot);
+    FrameLayout tile = dockTile(app == null ? "empty" + slot : app.pkg);
+    dockTiles.set(slot, tile);
+    dockKeys.remove(old);
+    dock.removeView(old);
+    dock.addView(tile, slot);
+    lastDock = slot;
+    geometry();
+    linkNativeFocus();
+    tile.requestFocus();
+    saveDock();
   }
 
   private void editDock(View tile) {
@@ -463,9 +540,7 @@ public class MainActivity extends Activity {
   private void finishDockEdit(boolean save) {
     if (dockBeforeEdit == null) return;
     if (save) {
-      List<String> keys = new ArrayList<>();
-      for (View tile : dockTiles) keys.add(dockKeys.get(tile));
-      getPreferences(MODE_PRIVATE).edit().putString("alpine_dock_order", String.join(",", keys)).apply();
+      saveDock();
     } else {
       dockTiles.clear();
       dockTiles.addAll(dockBeforeEdit);
@@ -915,6 +990,10 @@ public class MainActivity extends Activity {
   }
 
   private void showLibrary() {
+    showLibrary(-1);
+  }
+
+  private void showLibrary(int slot) {
     if (library != null) return;
     library = new Dialog(this);
     FrameLayout panel = new FrameLayout(this);
@@ -926,10 +1005,11 @@ public class MainActivity extends Activity {
     LinearLayout heading = new LinearLayout(this);
     heading.setGravity(Gravity.CENTER_VERTICAL);
     body.addView(heading);
-    TextView title = text("Apps", 25, art.mediumFont);
+    TextView title = text(slot < 0 ? "Apps" : "Choose an app", 25, art.mediumFont);
     heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
     TextView edit = topPill("Edit dock", R.drawable.ic_swap_vert, () -> editDock(dockTiles.get(lastDock)));
     heading.addView(edit, new LinearLayout.LayoutParams(dp(100), dp(38)));
+    if (slot >= 0) edit.setVisibility(View.GONE);
     ScrollView scroll = new ScrollView(this);
     body.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
     GridLayout grid = new GridLayout(this);
@@ -947,9 +1027,19 @@ public class MainActivity extends Activity {
               0,
               a,
               () -> {
-                library.dismiss();
-                launch(a.launch, a.pkg);
+                if (slot >= 0) changeDock(slot, a);
+                else {
+                  library.dismiss();
+                  launch(a.launch, a.pkg);
+                }
               });
+      tile.setOnLongClickListener(v -> {
+        v.cancelPendingInputEvents();
+        v.setPressed(false);
+        if (slot >= 0) changeDock(slot, a);
+        else appDockOptions(a);
+        return true;
+      });
       View.OnFocusChangeListener focusAnimation = tile.getOnFocusChangeListener();
       tile.setOnFocusChangeListener(
           (view, focused) -> {
@@ -974,7 +1064,7 @@ public class MainActivity extends Activity {
       View tile = ((ViewGroup) grid.getChildAt(i)).getChildAt(0);
       tile.setNextFocusLeftId(((ViewGroup) grid.getChildAt(i % 7 == 0 ? i : i - 1)).getChildAt(0).getId());
       tile.setNextFocusRightId(((ViewGroup) grid.getChildAt(i % 7 == 6 || i == grid.getChildCount() - 1 ? i : i + 1)).getChildAt(0).getId());
-      tile.setNextFocusUpId(i < 7 ? edit.getId() : ((ViewGroup) grid.getChildAt(i - 7)).getChildAt(0).getId());
+      tile.setNextFocusUpId(i < 7 ? (slot < 0 ? edit.getId() : tile.getId()) : ((ViewGroup) grid.getChildAt(i - 7)).getChildAt(0).getId());
       tile.setNextFocusDownId(((ViewGroup) grid.getChildAt(i + 7 < grid.getChildCount() ? i + 7 : i)).getChildAt(0).getId());
     }
     edit.setNextFocusLeftId(edit.getId());
@@ -982,7 +1072,7 @@ public class MainActivity extends Activity {
     edit.setNextFocusUpId(edit.getId());
     if (grid.getChildCount() > 0) edit.setNextFocusDownId(((ViewGroup) grid.getChildAt(0)).getChildAt(0).getId());
     TextView credit =
-        text("Weather by Open-Meteo  ·  Cached for 30 minutes  ·  Back to close", 11, art.textFont);
+        text("Hold OK for dock options  ·  Weather by Open-Meteo  ·  Back to close", 11, art.textFont);
     credit.setTextColor(0x99ffffff);
     body.addView(credit);
     panel.addView(new FocusGlow(this, fadeUpdates), new FrameLayout.LayoutParams(-1, -1));
@@ -1025,6 +1115,7 @@ public class MainActivity extends Activity {
     super.onNewIntent(intent);
     setIntent(intent);
     finishDockEdit(false);
+    if (dockMenu != null) dockMenu.dismiss();
     if (inputMenu != null) inputMenu.dismiss();
     if (library != null) library.dismiss();
     handle(intent);
@@ -1074,6 +1165,7 @@ public class MainActivity extends Activity {
     date.animate().cancel();
     date.setAlpha(1);
     getContentResolver().unregisterContentObserver(programs);
+    if (dockMenu != null) dockMenu.dismiss();
     if (library != null) library.dismiss();
     if (inputMenu != null) inputMenu.dismiss();
     super.onPause();
@@ -1157,7 +1249,12 @@ public class MainActivity extends Activity {
       } else {
         p.setColor(kind == 2 ? 0x5e272232 : 0x5e38303f);
         if (kind != 4) c.drawRoundRect(box, r, r, p);
-        if (kind == 3) {
+        if (kind == 5) {
+          p.setColor(0x99e8e4ef);
+          float cx = x + side / 2, cy = y + side / 2, arm = side * .12f;
+          c.drawRoundRect(cx - arm, cy - side * .012f, cx + arm, cy + side * .012f, 2, 2, p);
+          c.drawRoundRect(cx - side * .012f, cy - arm, cx + side * .012f, cy + arm, 2, 2, p);
+        } else if (kind == 3) {
           p.setColor(0xffe8e4ef);
           for (int i = -1; i <= 1; i++)
             c.drawCircle(x + side * .5f + i * side * .16f, y + side * .5f, side * .038f, p);

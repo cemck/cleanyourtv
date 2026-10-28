@@ -6,7 +6,12 @@ import android.database.ContentObserver;
 import android.graphics.*;
 import android.graphics.drawable.*;
 import android.media.tv.*;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
+import android.net.wifi.WifiInfo;
+import android.net.wifi.WifiManager;
 import android.os.*;
 import android.provider.Settings;
 import android.text.TextUtils;
@@ -30,16 +35,55 @@ public class MainActivity extends Activity {
   private final ExecutorService images = Executors.newFixedThreadPool(2);
   private FrameLayout root;
   private AlpineArt art;
+  private AlpineNowPlaying nowPlaying;
   private TextView date, label;
   private FrameLayout settings;
+  private TextView inputsPill, networkPill;
+  private ConnectivityManager connectivity;
+  private boolean networkRegistered;
+  private final ConnectivityManager.NetworkCallback networkChanges =
+      new ConnectivityManager.NetworkCallback() {
+        @Override
+        public void onAvailable(Network network) {
+          updateNetwork();
+        }
+
+        @Override
+        public void onLost(Network network) {
+          updateNetwork();
+        }
+
+        @Override
+        public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
+          updateNetwork();
+        }
+      };
   private LinearLayout shelf, dock;
   private final ArrayList<View> dockTiles = new ArrayList<>(), cards = new ArrayList<>();
+  private final Map<View, String> dockKeys = new HashMap<>();
+  private List<View> dockBeforeEdit;
+  private View movingTile;
+  private boolean heldDockEdit;
+  private CharSequence dockEditHeading;
   private List<AlpineData.App> apps = new ArrayList<>();
   private int width, height, lastDock;
-  private boolean visible, loading, weatherLoading;
+  private boolean visible, loading, weatherLoading, fadeUpdates;
   private long weatherAt;
   private String weather = "";
   private String displayedRows = "";
+  private List<AlpineData.Program> pendingPrograms;
+  private long programsAt;
+  private boolean programsQueued;
+  private final Runnable programsChanged = () -> refreshPrograms();
+  private final Runnable programRefresh =
+      new Runnable() {
+        @Override
+        public void run() {
+          if (!visible) return;
+          refreshPrograms();
+          handler.postDelayed(this, 30_000);
+        }
+      };
   private final android.util.LruCache<String, Bitmap> artworkCache =
       new android.util.LruCache<String, Bitmap>(8 * 1024 * 1024) {
         @Override
@@ -48,6 +92,7 @@ public class MainActivity extends Activity {
         }
       };
   private Dialog library;
+  private PopupWindow inputMenu;
   private final Runnable minute =
       new Runnable() {
         @Override
@@ -57,6 +102,9 @@ public class MainActivity extends Activity {
           art.tick();
           dock.invalidate();
           settings.invalidate();
+          inputsPill.invalidate();
+          networkPill.invalidate();
+          nowPlaying.invalidate();
           for (View card : cards) card.invalidate();
           refreshWeather();
           handler.postDelayed(this, 60_000 - System.currentTimeMillis() % 60_000);
@@ -66,7 +114,10 @@ public class MainActivity extends Activity {
       new ContentObserver(handler) {
         @Override
         public void onChange(boolean self) {
-          if (visible) refreshPrograms();
+          if (visible) {
+            handler.removeCallbacks(programsChanged);
+            handler.postDelayed(programsChanged, 750);
+          }
         }
       };
 
@@ -76,6 +127,8 @@ public class MainActivity extends Activity {
     getWindow()
         .setFlags(
             WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
+    Config appearance = Config.load(this);
+    fadeUpdates = appearance.animations && !appearance.reducedMotion;
     root = new FrameLayout(this);
     root.setBackgroundColor(0xff100e18);
     root.setClipChildren(false);
@@ -89,6 +142,20 @@ public class MainActivity extends Activity {
     settings = button("Settings", 4, null, this::openSettings);
     art.frost(settings, dp(22), .24f, false);
     root.addView(settings);
+    inputsPill = topPill(getString(R.string.inputs), R.drawable.ic_input, this::inputs);
+    networkPill =
+        topPill(
+            getString(R.string.wifi),
+            R.drawable.ic_wifi,
+            () ->
+                startActivity(
+                    SystemSettings.intent(this, Settings.ACTION_WIFI_SETTINGS)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)));
+    root.addView(inputsPill);
+    root.addView(networkPill);
+    connectivity = getSystemService(ConnectivityManager.class);
+    nowPlaying = new AlpineNowPlaying(this, art, images, fadeUpdates, this::linkNativeFocus);
+    root.addView(nowPlaying);
     label = text("Keep watching", 13, art.textFont);
     label.setTextColor(0xe6ffffff);
     root.addView(label);
@@ -100,6 +167,7 @@ public class MainActivity extends Activity {
     dock.setOrientation(LinearLayout.HORIZONTAL);
     dock.setGravity(Gravity.CENTER);
     dock.setClipChildren(false);
+    dock.setClipToPadding(false);
     art.frost(dock, dp(20), .42f);
     root.addView(dock);
     apps = AlpineData.apps(this);
@@ -121,6 +189,7 @@ public class MainActivity extends Activity {
         Math.max(
             0,
             Math.min(dockTiles.size() - 1, getPreferences(MODE_PRIVATE).getInt("dock_index", 0)));
+    root.addView(new FocusGlow(this, fadeUpdates), new FrameLayout.LayoutParams(-1, -1));
     root.post(
         () -> {
           dockTiles.get(lastDock).requestFocus();
@@ -137,6 +206,16 @@ public class MainActivity extends Activity {
         height * .118f - settingsSize / 2,
         settingsSize,
         settingsSize);
+    float gapTop = dp(8), networkWidth = dp(96), inputsWidth = dp(90);
+    float networkLeft = width * .928f - settingsSize / 2 - gapTop - networkWidth;
+    place(networkPill, networkLeft, height * .118f - settingsSize / 2, networkWidth, settingsSize);
+    place(
+        inputsPill,
+        networkLeft - gapTop - inputsWidth,
+        height * .118f - settingsSize / 2,
+        inputsWidth,
+        settingsSize);
+    place(nowPlaying, width * .04f, height * .118f - dp(64) / 2f, width * .28f, dp(64));
     place(label, width * .04f, height * .614f, width * .7f, height * .035f);
     place(shelf, width * .04f, height * .658f, width * .92f, height * .125f);
     int gap = dp(14);
@@ -205,9 +284,11 @@ public class MainActivity extends Activity {
     tile.setSoundEffectsEnabled(true);
     tile.setDefaultFocusHighlightEnabled(false);
     tile.setClickable(true);
+    tile.setClipChildren(false);
     tile.setContentDescription(title);
     Icon icon = new Icon(kind, app);
     tile.addView(icon, new FrameLayout.LayoutParams(-1, -1));
+    FocusGlow.mark(tile, kind == 4 ? tile : icon, kind == 4 ? -.5f : -.2f);
     tile.setOnClickListener(v -> click.run());
     tile.setOnFocusChangeListener(
         (v, focus) -> {
@@ -219,6 +300,82 @@ public class MainActivity extends Activity {
               .start();
         });
     return tile;
+  }
+
+  private TextView topPill(String label, int icon, Runnable action) {
+    TextView pill = text(label, 12, art.mediumFont);
+    pill.setId(View.generateViewId());
+    pill.setFocusable(true);
+    pill.setClickable(true);
+    pill.setDefaultFocusHighlightEnabled(false);
+    pill.setSoundEffectsEnabled(true);
+    pill.setGravity(Gravity.CENTER);
+    pill.setPadding(dp(8), 0, dp(8), 0);
+    pill.setCompoundDrawablePadding(dp(5));
+    pill.setContentDescription(label);
+    pillIcon(pill, icon);
+    art.frost(pill, dp(22), .24f, false);
+    FocusGlow.mark(pill, pill, -.5f);
+    pill.setOnClickListener(v -> action.run());
+    pill.setOnFocusChangeListener(
+        (v, focused) ->
+            v.animate()
+                .scaleX(focused ? 1.035f : 1)
+                .scaleY(focused ? 1.035f : 1)
+                .setDuration(180)
+                .setInterpolator(new DecelerateInterpolator())
+                .start());
+    return pill;
+  }
+
+  private void pillIcon(TextView pill, int resource) {
+    Drawable icon = getDrawable(resource).mutate();
+    icon.setBounds(0, 0, dp(17), dp(17));
+    pill.setCompoundDrawablesRelative(icon, null, null, null);
+  }
+
+  private void updateNetwork() {
+    if (!visible || connectivity == null) return;
+    data.execute(
+        () -> {
+          String label = getString(R.string.offline);
+          int icon = R.drawable.ic_wifi;
+          boolean ethernet = false, wifi = false;
+          try {
+            for (Network net : connectivity.getAllNetworks()) {
+              NetworkCapabilities caps = connectivity.getNetworkCapabilities(net);
+              if (caps == null || !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET))
+                continue;
+              ethernet |= caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET);
+              wifi |= caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI);
+            }
+            if (ethernet) {
+              label = getString(R.string.ethernet);
+              icon = R.drawable.ic_ethernet;
+            } else if (wifi) {
+              label = getString(R.string.wifi);
+              WifiManager manager =
+                  (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+              WifiInfo info = manager == null ? null : manager.getConnectionInfo();
+              String name = info == null ? null : info.getSSID();
+              if (name != null) {
+                name = name.replace("\"", "").trim();
+                if (!name.isEmpty() && !name.contains("unknown") && !name.equals("0x"))
+                  label = name;
+              }
+            }
+          } catch (RuntimeException unavailable) {
+          }
+          String value = label;
+          int artwork = icon;
+          handler.post(
+              () -> {
+                if (!visible || isDestroyed()) return;
+                networkPill.setText(value);
+                networkPill.setContentDescription("Network: " + value);
+                pillIcon(networkPill, artwork);
+              });
+        });
   }
 
   private void buildDock() {
@@ -243,27 +400,46 @@ public class MainActivity extends Activity {
       FrameLayout tile = button(a.label, 0, a, () -> launch(a.launch, a.pkg));
       dock.addView(tile);
       dockTiles.add(tile);
+      dockKeys.put(tile, a.pkg);
     }
     while (dockTiles.size() < 10) {
       FrameLayout tile = button("Apps", 3, null, this::showLibrary);
       dock.addView(tile);
       dockTiles.add(tile);
+      dockKeys.put(tile, "empty" + dockTiles.size());
     }
     FrameLayout gear = button("Settings", 2, null, this::openSettings);
     dock.addView(gear);
     dockTiles.add(gear);
+    dockKeys.put(gear, "settings");
     FrameLayout more = button("All apps", 3, null, this::showLibrary);
     dock.addView(more);
     dockTiles.add(more);
+    dockKeys.put(more, "apps");
+    List<View> ordered = new ArrayList<>();
+    for (String key : getPreferences(MODE_PRIVATE).getString("alpine_dock_order", "").split(","))
+      for (View tile : dockTiles)
+        if (key.equals(dockKeys.get(tile)) && !ordered.contains(tile)) ordered.add(tile);
+    for (View tile : dockTiles) if (!ordered.contains(tile)) ordered.add(tile);
+    dockTiles.clear();
+    dockTiles.addAll(ordered);
+    dock.removeAllViews();
+    for (View tile : dockTiles) dock.addView(tile);
     for (int i = 0; i < dockTiles.size(); i++) {
-      final int at = i;
       View tile = dockTiles.get(i);
+      tile.setOnLongClickListener(v -> { editDock(v); heldDockEdit = true; return true; });
       View.OnFocusChangeListener animation = tile.getOnFocusChangeListener();
       tile.setOnFocusChangeListener(
           (v, f) -> {
             animation.onFocusChange(v, f);
             if (f) {
+              int at = dockTiles.indexOf(v);
               lastDock = at;
+              if (pendingPrograms != null) {
+                List<AlpineData.Program> ready = pendingPrograms;
+                pendingPrograms = null;
+                showPrograms(ready, "Watch next");
+              }
               linkNativeFocus();
               getPreferences(MODE_PRIVATE).edit().putInt("dock_index", at).apply();
             }
@@ -271,15 +447,103 @@ public class MainActivity extends Activity {
     }
   }
 
+  private void editDock(View tile) {
+    if (dockBeforeEdit != null) return;
+    if (library != null) library.dismiss();
+    dockBeforeEdit = new ArrayList<>(dockTiles);
+    movingTile = tile;
+    tile.cancelPendingInputEvents();
+    tile.setPressed(false);
+    heldDockEdit = false;
+    dockEditHeading = label.getText();
+    label.setText("Move left or right  ·  OK to save  ·  Back to cancel");
+    tile.requestFocus();
+  }
+
+  private void finishDockEdit(boolean save) {
+    if (dockBeforeEdit == null) return;
+    if (save) {
+      List<String> keys = new ArrayList<>();
+      for (View tile : dockTiles) keys.add(dockKeys.get(tile));
+      getPreferences(MODE_PRIVATE).edit().putString("alpine_dock_order", String.join(",", keys)).apply();
+    } else {
+      dockTiles.clear();
+      dockTiles.addAll(dockBeforeEdit);
+    }
+    dockBeforeEdit = null;
+    for (int i = 0; i < dockTiles.size(); i++) {
+      View tile = dockTiles.get(i);
+      if (dock.getChildAt(i) != tile) {
+        dock.removeView(tile);
+        dock.addView(tile, i);
+      }
+    }
+    geometry();
+    linkNativeFocus();
+    lastDock = dockTiles.indexOf(movingTile);
+    movingTile.requestFocus();
+    movingTile = null;
+    label.setText(dockEditHeading);
+  }
+
+  @Override
+  public boolean dispatchKeyEvent(KeyEvent event) {
+    if (dockBeforeEdit == null) return super.dispatchKeyEvent(event);
+    int code = event.getKeyCode();
+    if (code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT) {
+      if (event.getAction() == KeyEvent.ACTION_DOWN) {
+        int from = dockTiles.indexOf(movingTile);
+        int to = Math.max(0, Math.min(dockTiles.size() - 1, from + (code == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1)));
+        if (from != to) {
+          Collections.swap(dockTiles, from, to);
+          dock.removeView(movingTile);
+          dock.addView(movingTile, to);
+          geometry();
+          linkNativeFocus();
+          movingTile.requestFocus();
+          movingTile.playSoundEffect(code == KeyEvent.KEYCODE_DPAD_LEFT ? SoundEffectConstants.NAVIGATION_LEFT : SoundEffectConstants.NAVIGATION_RIGHT);
+        }
+      }
+      return true;
+    }
+    if (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_BACK) {
+      if (event.getAction() == KeyEvent.ACTION_UP) {
+        if (heldDockEdit && code != KeyEvent.KEYCODE_BACK) {
+          heldDockEdit = false;
+          movingTile.cancelPendingInputEvents();
+          movingTile.setPressed(false);
+        }
+        else finishDockEdit(code != KeyEvent.KEYCODE_BACK);
+      }
+      return true;
+    }
+    if (code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN) return true;
+    return super.dispatchKeyEvent(event);
+  }
+
   /** Explicit links, with native Android focus search, key repeat and navigation audio. */
   private void linkNativeFocus() {
     if (settings == null || dockTiles.isEmpty()) return;
     int settingsId = settings.getId();
-    settings.setNextFocusLeftId(settingsId);
-    settings.setNextFocusRightId(settingsId);
-    settings.setNextFocusUpId(settingsId);
-    settings.setNextFocusDownId(
-        cards.isEmpty() ? dockTiles.get(lastDock).getId() : cards.get(cards.size() - 1).getId());
+    List<View> top = nowPlaying == null ? new ArrayList<>() : nowPlaying.targets();
+    top.add(inputsPill);
+    top.add(networkPill);
+    top.add(settings);
+    for (int i = 0; i < top.size(); i++) {
+      View view = top.get(i);
+      view.setNextFocusLeftId(top.get(Math.max(0, i - 1)).getId());
+      view.setNextFocusRightId(top.get(Math.min(top.size() - 1, i + 1)).getId());
+      view.setNextFocusUpId(view.getId());
+      view.setNextFocusDownId(
+          cards.isEmpty()
+              ? dockTiles.get(lastDock).getId()
+              : cards
+                  .get(
+                      view == inputsPill
+                          ? Math.min(1, cards.size() - 1)
+                          : view == networkPill || view == settings ? cards.size() - 1 : 0)
+                  .getId());
+    }
     for (int index = 0; index < dockTiles.size(); index++) {
       View tile = dockTiles.get(index);
       tile.setNextFocusLeftId(dockTiles.get(Math.max(0, index - 1)).getId());
@@ -296,7 +560,8 @@ public class MainActivity extends Activity {
       View card = cards.get(index);
       card.setNextFocusLeftId(cards.get(Math.max(0, index - 1)).getId());
       card.setNextFocusRightId(cards.get(Math.min(cards.size() - 1, index + 1)).getId());
-      card.setNextFocusUpId(settingsId);
+      card.setNextFocusUpId(
+          index == 0 ? top.get(0).getId() : index == 1 ? inputsPill.getId() : networkPill.getId());
       card.setNextFocusDownId(dockTiles.get(lastDock).getId());
     }
   }
@@ -330,6 +595,7 @@ public class MainActivity extends Activity {
   }
 
   private void showPrograms(List<AlpineData.Program> rows, String heading) {
+    long artworkAt = System.currentTimeMillis();
     StringBuilder signature = new StringBuilder(heading);
     Set<String> signatureApps = new HashSet<>();
     for (AlpineData.Program row : rows) {
@@ -342,15 +608,23 @@ public class MainActivity extends Activity {
           .append('|')
           .append(row.subtitle)
           .append('|')
-          .append(row.art);
+          .append(row.artworkKey(artworkAt))
+          .append('|')
+          .append(row.intent == null ? "" : row.intent.toUri(0));
       if (signatureApps.size() == 3) break;
     }
     if (signature.toString().equals(displayedRows)) return;
     displayedRows = signature.toString();
     boolean hadCard = cards.contains(getCurrentFocus());
+    if (fadeUpdates && android.animation.ValueAnimator.areAnimatorsEnabled() && shelf.isLaidOut()) {
+      android.transition.TransitionManager.endTransitions(shelf);
+      android.transition.TransitionManager.beginDelayedTransition(
+          shelf, new android.transition.Fade().setDuration(240));
+    }
     shelf.removeAllViews();
     cards.clear();
-    label.setText(heading);
+    if (dockBeforeEdit == null) label.setText(heading);
+    else dockEditHeading = heading;
     Set<String> unique = new HashSet<>();
     for (AlpineData.Program row : rows) {
       if (!unique.add(row.app.pkg)) continue;
@@ -363,6 +637,7 @@ public class MainActivity extends Activity {
       card.setClickable(true);
       card.setContentDescription(row.app.label + ", " + row.title + ", " + row.subtitle);
       art.frost(card, dp(14), .48f);
+      FocusGlow.mark(card, card, dp(14));
       ImageView poster = new ImageView(this);
       poster.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
       poster.setImageDrawable(row.app.banner == null ? row.app.icon : row.app.banner);
@@ -429,7 +704,15 @@ public class MainActivity extends Activity {
 
       shelf.addView(card);
       cards.add(card);
-      Bitmap cached = artworkCache.get(row.art);
+      String artworkKey = row.artworkKey(artworkAt);
+      Bitmap cached = artworkCache.get(artworkKey);
+      if (cached == null && !artworkKey.equals(row.art)) {
+        Bitmap previous = artworkCache.get(row.art + "|" + (artworkAt / 120_000 - 1));
+        if (previous != null) {
+          poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
+          poster.setImageBitmap(previous);
+        }
+      }
       if (cached != null) {
         poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
         poster.setImageBitmap(cached);
@@ -437,13 +720,28 @@ public class MainActivity extends Activity {
         images.execute(
             () -> {
               Bitmap bitmap = AlpineData.artwork(this, row.art);
-              if (bitmap != null) artworkCache.put(row.art, bitmap);
+              if (bitmap != null) artworkCache.put(artworkKey, bitmap);
               if (bitmap != null)
                 handler.post(
                     () -> {
                       if (!isDestroyed() && poster.isAttachedToWindow()) {
                         poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                        poster.setImageBitmap(bitmap);
+                        if (fadeUpdates
+                            && android.animation.ValueAnimator.areAnimatorsEnabled()
+                            && poster.isShown()
+                            && poster.getDrawable() != null) {
+                          Drawable before = poster.getDrawable();
+                          if (before.getConstantState() != null)
+                            before = before.getConstantState().newDrawable(getResources()).mutate();
+                          TransitionDrawable fade =
+                              new TransitionDrawable(
+                                  new Drawable[] {
+                                    before, new BitmapDrawable(getResources(), bitmap)
+                                  });
+                          fade.setCrossFadeEnabled(true);
+                          poster.setImageDrawable(fade);
+                          fade.startTransition(200);
+                        } else poster.setImageBitmap(bitmap);
                       }
                     });
             });
@@ -454,74 +752,81 @@ public class MainActivity extends Activity {
   }
 
   private void refreshPrograms() {
-    if (loading || !visible) return;
+    if (!visible) return;
+    if (loading) {
+      programsQueued = true;
+      return;
+    }
+    long elapsed = android.os.SystemClock.elapsedRealtime();
+    if (elapsed - programsAt < 1500) {
+      handler.removeCallbacks(programsChanged);
+      handler.postDelayed(programsChanged, 1500);
+      return;
+    }
+    programsAt = elapsed;
     loading = true;
     data.execute(
         () -> {
-          List<AlpineData.Program> rows = AlpineData.programs(this, apps, false);
-          boolean watch = !rows.isEmpty();
-          android.util.Log.i("AlpineHome", "Watch Next rows: " + rows.size());
-          if (rows.isEmpty()) rows = AlpineData.programs(this, apps, true);
-          Map<String, Integer> counts = new LinkedHashMap<>();
-          for (AlpineData.Program row : rows)
-            counts.put(row.app.pkg, counts.getOrDefault(row.app.pkg, 0) + 1);
-          android.util.Log.i("AlpineHome", "Visible content sources: " + counts);
-          List<AlpineData.Program> distinct = new ArrayList<>();
-          Set<String> seen = new HashSet<>();
-          for (AlpineData.Program row : rows)
-            if (!row.app.pkg.toLowerCase(Locale.ROOT).contains("browse") && seen.add(row.app.pkg))
-              distinct.add(row);
-          if (distinct.size() < 3) {
-            List<AlpineData.Program> preview = AlpineData.programs(this, apps, true);
-            android.util.Log.i("AlpineHome", "Preview rows: " + preview.size());
-            for (AlpineData.Program row : preview)
-              if (!row.app.pkg.toLowerCase(Locale.ROOT).contains("browse") && seen.add(row.app.pkg))
-                distinct.add(row);
+          List<AlpineData.Program> ready = new ArrayList<>();
+          try {
+            ready =
+                AlpineShelf.select(
+                    AlpineData.programs(this, apps, false),
+                    AlpineData.programs(this, apps, true),
+                    System.currentTimeMillis());
+            Set<String> sources = new HashSet<>();
+            for (AlpineData.Program row : ready) sources.add(row.app.pkg);
+            List<AlpineData.App> recent = new ArrayList<>(apps);
+            recent.sort(
+                (a, b) -> Long.compare(LastOpened.get(this, b.pkg), LastOpened.get(this, a.pkg)));
+            for (AlpineData.App app : recent) {
+              if (ready.size() >= 3) break;
+              long when = LastOpened.get(this, app.pkg);
+              if (when > 0 && !app.pkg.contains("browse") && sources.add(app.pkg))
+                ready.add(
+                    new AlpineData.Program(
+                        app,
+                        app.label,
+                        "Last opened " + LastOpened.describe(this, when),
+                        "",
+                        app.launch,
+                        when,
+                        0));
+            }
+            android.util.Log.i(
+                "AlpineHome", "Shelf refreshed: " + ready.size() + " cards from " + sources);
+          } catch (RuntimeException unavailable) {
+            android.util.Log.i(
+                "AlpineHome",
+                "Content refresh unavailable: " + unavailable.getClass().getSimpleName());
+          } finally {
+            List<AlpineData.Program> result = ready;
+            handler.post(
+                () -> {
+                  loading = false;
+                  if (isDestroyed() || !visible) return;
+                  if (!result.isEmpty()) {
+                    if (cards.contains(getCurrentFocus())
+                        || (library != null && library.isShowing())) pendingPrograms = result;
+                    else {
+                      pendingPrograms = null;
+                      showPrograms(result, "Watch next");
+                    }
+                  } else showRecentApps();
+                  if (programsQueued) {
+                    programsQueued = false;
+                    handler.removeCallbacks(programsChanged);
+                    handler.postDelayed(programsChanged, 750);
+                  }
+                });
           }
-          List<AlpineData.App> recent = new ArrayList<>(apps);
-          recent.sort(
-              (a, b) -> Long.compare(LastOpened.get(this, b.pkg), LastOpened.get(this, a.pkg)));
-          for (AlpineData.App a : recent) {
-            if (distinct.size() >= 3) break;
-            long when = LastOpened.get(this, a.pkg);
-            if (when > 0 && seen.add(a.pkg))
-              distinct.add(
-                  new AlpineData.Program(
-                      a,
-                      a.label,
-                      "Last opened " + LastOpened.describe(this, when),
-                      "",
-                      a.launch,
-                      when,
-                      0));
-          }
-          if (distinct.size() < 3) {
-            for (String pkg :
-                Arrays.asList(
-                    "com.netflix.ninja",
-                    "com.amazon.amazonvideo.livingroom",
-                    "com.google.android.youtube.tv"))
-              for (AlpineData.App app : apps)
-                if (distinct.size() < 3 && app.pkg.equals(pkg) && seen.add(app.pkg))
-                  distinct.add(
-                      new AlpineData.Program(app, app.label, "Open app", "", app.launch, 0, 0));
-          }
-          if (!distinct.isEmpty()) rows = distinct;
-          List<AlpineData.Program> ready = rows;
-          handler.post(
-              () -> {
-                loading = false;
-                if (isDestroyed() || !visible) return;
-                if (!ready.isEmpty()) showPrograms(ready, watch ? "Keep watching" : "Recommended");
-                else showRecentApps();
-              });
         });
   }
 
   private void updateDate() {
     String day = new SimpleDateFormat("EEEE d MMMM", Locale.ENGLISH).format(new Date());
     if (weather.isEmpty()) {
-      date.setText(day);
+      setDateText(day, day);
       return;
     }
     String line = day + "   " + weather;
@@ -536,8 +841,31 @@ public class MainActivity extends Activity {
           day.length() + 3 + symbolEnd,
           android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
     }
-    date.setText(styled);
-    date.setContentDescription(day + ", " + weather.substring(Math.max(0, symbolEnd + 1)));
+    setDateText(styled, day + ", " + weather.substring(Math.max(0, symbolEnd + 1)));
+  }
+
+  private void setDateText(CharSequence value, String description) {
+    if (TextUtils.equals(date.getText(), value)) return;
+    date.animate().cancel();
+    if (fadeUpdates
+        && android.animation.ValueAnimator.areAnimatorsEnabled()
+        && date.isLaidOut()
+        && date.getText().length() > 0) {
+      date.animate()
+          .alpha(0)
+          .setDuration(100)
+          .withEndAction(
+              () -> {
+                date.setText(value);
+                date.setContentDescription(description);
+                date.animate().alpha(1).setDuration(160).start();
+              })
+          .start();
+    } else {
+      date.setAlpha(1);
+      date.setText(value);
+      date.setContentDescription(description);
+    }
   }
 
   private void refreshWeather() {
@@ -595,17 +923,24 @@ public class MainActivity extends Activity {
     body.setOrientation(LinearLayout.VERTICAL);
     body.setPadding(dp(28), dp(22), dp(28), dp(20));
     panel.addView(body, new FrameLayout.LayoutParams(-1, -1));
+    LinearLayout heading = new LinearLayout(this);
+    heading.setGravity(Gravity.CENTER_VERTICAL);
+    body.addView(heading);
     TextView title = text("Apps", 25, art.mediumFont);
-    body.addView(title);
+    heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+    TextView edit = topPill("Edit dock", R.drawable.ic_swap_vert, () -> editDock(dockTiles.get(lastDock)));
+    heading.addView(edit, new LinearLayout.LayoutParams(dp(100), dp(38)));
     ScrollView scroll = new ScrollView(this);
     body.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
     GridLayout grid = new GridLayout(this);
+    grid.setClipChildren(false);
     grid.setColumnCount(7);
     scroll.addView(grid);
     for (AlpineData.App a : apps) {
       LinearLayout cell = new LinearLayout(this);
       cell.setOrientation(LinearLayout.VERTICAL);
       cell.setGravity(Gravity.CENTER);
+      cell.setClipChildren(false);
       FrameLayout tile =
           button(
               a.label,
@@ -615,6 +950,15 @@ public class MainActivity extends Activity {
                 library.dismiss();
                 launch(a.launch, a.pkg);
               });
+      View.OnFocusChangeListener focusAnimation = tile.getOnFocusChangeListener();
+      tile.setOnFocusChangeListener(
+          (view, focused) -> {
+            focusAnimation.onFocusChange(view, focused);
+            if (focused) tile.post(() -> {
+              if (tile.hasFocus())
+                cell.requestRectangleOnScreen(new Rect(0, 0, cell.getWidth(), cell.getHeight()), false);
+            });
+          });
       cell.addView(tile, new LinearLayout.LayoutParams(dp(66), dp(66)));
       TextView name = text(a.label, 11, art.textFont);
       name.setGravity(Gravity.CENTER);
@@ -626,10 +970,22 @@ public class MainActivity extends Activity {
       g.height = dp(112);
       grid.addView(cell, g);
     }
+    for (int i = 0; i < grid.getChildCount(); i++) {
+      View tile = ((ViewGroup) grid.getChildAt(i)).getChildAt(0);
+      tile.setNextFocusLeftId(((ViewGroup) grid.getChildAt(i % 7 == 0 ? i : i - 1)).getChildAt(0).getId());
+      tile.setNextFocusRightId(((ViewGroup) grid.getChildAt(i % 7 == 6 || i == grid.getChildCount() - 1 ? i : i + 1)).getChildAt(0).getId());
+      tile.setNextFocusUpId(i < 7 ? edit.getId() : ((ViewGroup) grid.getChildAt(i - 7)).getChildAt(0).getId());
+      tile.setNextFocusDownId(((ViewGroup) grid.getChildAt(i + 7 < grid.getChildCount() ? i + 7 : i)).getChildAt(0).getId());
+    }
+    edit.setNextFocusLeftId(edit.getId());
+    edit.setNextFocusRightId(edit.getId());
+    edit.setNextFocusUpId(edit.getId());
+    if (grid.getChildCount() > 0) edit.setNextFocusDownId(((ViewGroup) grid.getChildAt(0)).getChildAt(0).getId());
     TextView credit =
         text("Weather by Open-Meteo  ·  Cached for 30 minutes  ·  Back to close", 11, art.textFont);
     credit.setTextColor(0x99ffffff);
     body.addView(credit);
+    panel.addView(new FocusGlow(this, fadeUpdates), new FrameLayout.LayoutParams(-1, -1));
     library.setContentView(panel);
     Window window = library.getWindow();
     if (window != null) {
@@ -654,33 +1010,8 @@ public class MainActivity extends Activity {
   }
 
   private void inputs() {
-    TvInputManager manager = (TvInputManager) getSystemService(TV_INPUT_SERVICE);
-    if (manager == null) return;
-    List<TvInputInfo> list = new ArrayList<>();
-    List<String> names = new ArrayList<>();
-    for (TvInputInfo input : manager.getTvInputList())
-      if (input.isPassthroughInput() && !input.isHidden(this)) {
-        list.add(input);
-        names.add(input.loadLabel(this).toString());
-      }
-    names.add("Live TV");
-    new AlertDialog.Builder(this)
-        .setTitle("Inputs")
-        .setItems(
-            names.toArray(new String[0]),
-            (d, at) -> {
-              if (at < list.size())
-                startActivity(
-                    new Intent(
-                        Intent.ACTION_VIEW,
-                        TvContract.buildChannelUriForPassthroughInput(list.get(at).getId())));
-              else {
-                Intent live =
-                    getPackageManager().getLeanbackLaunchIntentForPackage("org.droidtv.playtv");
-                if (live != null) startActivity(live);
-              }
-            })
-        .show();
+    if (inputMenu != null) inputMenu.dismiss();
+    inputMenu = new AlpineInputMenu(this, art, root, inputsPill, fadeUpdates).show();
   }
 
   private void handle(Intent intent) {
@@ -693,18 +1024,32 @@ public class MainActivity extends Activity {
   protected void onNewIntent(Intent intent) {
     super.onNewIntent(intent);
     setIntent(intent);
+    finishDockEdit(false);
+    if (inputMenu != null) inputMenu.dismiss();
     if (library != null) library.dismiss();
     handle(intent);
     dockTiles.get(lastDock).requestFocus();
+    refreshPrograms();
+    nowPlaying.start();
   }
 
   @Override
   protected void onResume() {
     super.onResume();
     visible = true;
+    nowPlaying.start();
+    if (connectivity != null && !networkRegistered) {
+      try {
+        connectivity.registerDefaultNetworkCallback(networkChanges, handler);
+        networkRegistered = true;
+      } catch (RuntimeException unavailable) {
+      }
+    }
+    updateNetwork();
     handler.removeCallbacks(minute);
     handler.post(minute);
-    refreshPrograms();
+    handler.removeCallbacks(programRefresh);
+    handler.post(programRefresh);
     try {
       getContentResolver()
           .registerContentObserver(Uri.parse("content://android.media.tv"), true, programs);
@@ -714,10 +1059,23 @@ public class MainActivity extends Activity {
 
   @Override
   protected void onPause() {
+    finishDockEdit(false);
     visible = false;
+    nowPlaying.stop();
+    if (connectivity != null && networkRegistered) {
+      connectivity.unregisterNetworkCallback(networkChanges);
+      networkRegistered = false;
+    }
     handler.removeCallbacks(minute);
+    handler.removeCallbacks(programRefresh);
+    handler.removeCallbacks(programsChanged);
+    programsQueued = false;
+    android.transition.TransitionManager.endTransitions(shelf);
+    date.animate().cancel();
+    date.setAlpha(1);
     getContentResolver().unregisterContentObserver(programs);
     if (library != null) library.dismiss();
+    if (inputMenu != null) inputMenu.dismiss();
     super.onPause();
   }
 

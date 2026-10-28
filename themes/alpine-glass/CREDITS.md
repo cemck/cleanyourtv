@@ -6,4 +6,4 @@ The material blur, clock, foreground depth clipping, interface and navigation ar
 
 Apple font files are private local assets and are not redistributed here. Open-source launcher code remains under the repository's MIT licence.
 
-Weather artwork is Google’s official Weather condition icon set, downloaded from `maps.gstatic.com/weather/v1/`, resized to 64 pixels and losslessly encoded as WebP for local rendering. Source: https://developers.google.com/maps/documentation/weather/weather-condition-icons . These Google assets are distinct from the repository’s MIT-licensed code.
+Weather artwork is Google’s official Weather condition icon set, downloaded from `maps.gstatic.com/weather/v1/`, resized to 64 pixels and encoded as WebP (quality 95 with full-quality alpha) for local rendering. Source: https://developers.google.com/maps/documentation/weather/weather-condition-icons . These Google assets are distinct from the repository’s MIT-licensed code.

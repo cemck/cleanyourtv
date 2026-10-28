@@ -25,5 +25,6 @@
   "show_greeting": false,
   "header_white": true,
   "key_filter": false,
-  "stock_home_redirect": "com.google.android.apps.tv.launcherx"
+  "stock_home_redirect": "",
+  "restore_key_services": false
 }

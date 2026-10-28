@@ -35,8 +35,25 @@ final class AlpineData {
     final Intent intent;
     final long when;
     final float progress;
+    final boolean preview, live;
+    final long start, end;
 
     Program(App a, String t, String sub, String image, Intent in, long time, float p) {
+      this(a, t, sub, image, in, time, p, false, false, 0, 0);
+    }
+
+    Program(
+        App a,
+        String t,
+        String sub,
+        String image,
+        Intent in,
+        long time,
+        float p,
+        boolean recommendation,
+        boolean onAir,
+        long from,
+        long until) {
       app = a;
       title = t;
       subtitle = sub;
@@ -44,6 +61,14 @@ final class AlpineData {
       intent = in;
       when = time;
       progress = p;
+      preview = recommendation;
+      live = onAir;
+      start = from;
+      end = until;
+    }
+
+    String artworkKey(long now) {
+      return art + ((live || AlpineShelf.twitch(app.pkg)) ? "|" + now / 120_000 : "");
     }
   }
 
@@ -86,11 +111,14 @@ final class AlpineData {
     // No SQL selection: ordinary READ_TV_LISTINGS callers can read searchable rows only.
     try (Cursor c = ctx.getContentResolver().query(uri, null, null, null, null)) {
       if (c != null)
-        while (c.moveToNext() && result.size() < 120) {
+        while (c.moveToNext() && c.getPosition() < 4096) {
           App app = installed.get(str(c, "package_name"));
           String title = str(c, "title"), raw = str(c, "intent_uri");
           if (app == null || title.isEmpty() || raw.isEmpty()) continue;
-          if (!preview && number(c, "browsable", 1) == 0) continue;
+          if (number(c, "browsable", 1) == 0) continue;
+          boolean live = number(c, "live", 0) == 1;
+          long start = number(c, "start_time_utc_millis", 0),
+              end = number(c, "end_time_utc_millis", 0);
           Intent open;
           try {
             open = Intent.parseUri(raw, Intent.URI_INTENT_SCHEME);
@@ -110,7 +138,9 @@ final class AlpineData {
                 (season.isEmpty() ? "" : "S" + season)
                     + (episode.isEmpty() ? "" : " E" + episode)
                     + (sub.isEmpty() ? "" : " · " + sub);
-          if (sub.isEmpty()) sub = preview ? "Recommended for you" : "Continue watching";
+          if (live) sub = "Live now";
+          else if (preview && AlpineShelf.twitch(app.pkg)) sub = "Recommended on Twitch";
+          else if (sub.isEmpty()) sub = preview ? "Recommended for you" : "Continue watching";
           result.add(
               new Program(
                   app,
@@ -119,12 +149,34 @@ final class AlpineData {
                   str(c, "poster_art_uri"),
                   open,
                   when,
-                  duration > 0 ? Math.min(1f, (float) last / duration) : 0));
+                  duration > 0 ? Math.min(1f, (float) last / duration) : 0,
+                  preview,
+                  live,
+                  start,
+                  end));
         }
     } catch (RuntimeException error) {
       Log.i("AlpineHome", "Program access unavailable: " + error.getClass().getSimpleName());
     }
     result.sort((a, b) -> Long.compare(b.when, a.when));
+    Map<String, Integer> sources = new LinkedHashMap<>();
+    for (Program program : result)
+      sources.put(program.app.pkg, sources.getOrDefault(program.app.pkg, 0) + 1);
+    int twitchLive = 0, twitchCount = 0;
+    for (Program program : result)
+      if (AlpineShelf.twitch(program.app.pkg)) {
+        twitchCount++;
+        if (program.live) twitchLive++;
+      }
+    Log.i(
+        "AlpineHome",
+        (preview ? "Preview" : "Watch Next")
+            + " provider sources: "
+            + sources
+            + "; Twitch live flags="
+            + twitchLive
+            + "/"
+            + twitchCount);
     return result;
   }
 

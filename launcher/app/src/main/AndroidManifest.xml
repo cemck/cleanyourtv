@@ -82,6 +82,17 @@
         android:allowBackup="false"
         android:localeConfig="@xml/locales_config">
 
+        <!-- MediaSession access only: do not deliver any notification categories. -->
+        <service android:name=".MediaAccess" android:exported="true"
+            android:label="Now Playing media access"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+            <meta-data android:name="android.service.notification.default_filter_types" android:value="" />
+            <meta-data android:name="android.service.notification.disabled_filter_types" android:value="1,2,4,8" />
+        </service>
+
         <activity android:name=".ClassicHomeActivity" android:exported="false" />
         <activity
             android:name=".MainActivity"

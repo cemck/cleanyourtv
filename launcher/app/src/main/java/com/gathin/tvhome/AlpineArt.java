@@ -21,6 +21,7 @@ final class AlpineArt extends View {
   final Typeface clockFont, textFont, mediumFont;
   private final Paint paint = new Paint(3);
   private final Paint sceneryPaint = new Paint(3);
+  private final Paint clockScenePaint = new Paint(3);
   private ColorMatrixColorFilter sceneryFilter;
   private double latitude = Double.NaN, longitude = Double.NaN;
   private LocalDate solarDate;
@@ -180,6 +181,11 @@ final class AlpineArt extends View {
             }));
     sceneryFilter = new ColorMatrixColorFilter(saturation);
     sceneryPaint.setColorFilter(sceneryFilter);
+    ColorMatrix vividGlass = new ColorMatrix();
+    vividGlass.setSaturation(1.5f);
+    vividGlass.postConcat(saturation);
+    clockScenePaint.setColorFilter(new ColorMatrixColorFilter(vividGlass));
+    clockScenePaint.setAlpha(210);
   }
 
   @Override
@@ -211,14 +217,16 @@ final class AlpineArt extends View {
       paint.getTextBounds(time, 0, time.length(), bounds);
       digits = new Path();
       paint.getTextPath(time, 0, time.length(), (w - width) / 2f, h * .505f, digits);
+      // Variable-font glyphs can overlap internally (notably 6 and 9). Resolve the filled
+      // silhouette before stroking the glass rim, so construction seams are never outlined.
+      Path silhouette = new Path();
+      if (silhouette.op(digits, digits, Path.Op.UNION)) digits = silhouette;
     }
     // Frosted scenery inside the letter shapes, then a tinted clear-glass fill and rim.
     int save = c.save();
     c.clipPath(digits);
     if (frost != null) {
-      sceneryPaint.setAlpha(140);
-      c.drawBitmap(frost, null, new Rect(0, 0, w, h), sceneryPaint);
-      sceneryPaint.setAlpha(255);
+      c.drawBitmap(frost, null, new Rect(0, 0, w, h), clockScenePaint);
     }
     paint.setShader(
         new LinearGradient(
